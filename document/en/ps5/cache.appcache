@@ -59,7 +59,6 @@ payloads/elfldr/metadata.json #c9eb539a3fb6b8b9fa882d5119b1ee5335ff3f6759a45af72
 payloads/elfldr/0.22.2/elfldr-ps5.elf #b456a30d5f1d4941b985a44e06613018f608cc9c62bf992e2564494d365216cd
 payloads/etahen/metadata.json #78fda84b5ed40028bcc253fd74bff17936f12d0f0b2c2501aead1e4dac39973c
 payloads/etahen/2.5B/etaHEN-2.5B.bin #4845cac45095361b8983b14d6690622183b0dcfbf6d7fda16e161aa91ff0531e
-payloads/etahen/2.5B/etaHEN-2.5B.bin #4845cac45095361b8983b14d6690622183b0dcfbf6d7fda16e161aa91ff0531e
 payloads/ftpsrv/metadata.json #a2c3e8182dec2383630596f6934927ff61f79401502987d6f853d0abd007a227
 payloads/ftpsrv/0.19/ftpsrv-ps5-install.elf #252afcc01ef5fca4dc314d46232d3ac2ce5332fcc3a450a1c02bdc046652ead6
 payloads/gdbsrv/metadata.json #7b617d129ba93aad734bb14e7b88094b78f5dfb7ca6d2a4d036e3921c3f88073
