@@ -30,54 +30,85 @@ function closeSettings() {
 }
 
 /**
- * Pre-fetch non-default payload versions into browser HTTP cache.
- * Iterates over all visible payloads and fetches selected non-default versions.
- * This is fire-and-forget - errors are silently ignored.
+ * Pre-fetch non-default payload versions into the browser's HTTP cache.
+ *
+ * This is what makes user-selected versions usable when the PS5 is offline.
+ * The HTTP cache is opportunistic (LRU-evictable, much smaller than AppCache),
+ * so we keep a localStorage marker for each successfully fetched
+ * payload@version pair to:
+ *   - skip work we've already done (no redundant downloads)
+ *   - drive the "Cached*" badge so users know which non-default versions
+ *     were actually cached vs. still requiring network
+ *
+ * Sequential fetch (not Promise.all) avoids overwhelming the PS5 browser's
+ * concurrent connection limit. We await arrayBuffer() so the response body
+ * is consumed — without this, some browsers skip caching the response.
  */
-function preFetchSelectedPayloads() {
-    var count = 0;
-    
+async function preFetchSelectedPayloads() {
+    if (!navigator.onLine) {
+        // No point trying when offline; nothing to fetch.
+        return;
+    }
+
+    var prefetched = (typeof getPrefetchedVersions === "function") ? getPrefetchedVersions() : {};
+    var toFetch = [];
+
     for (var i = 0; i < payload_map.length; i++) {
         var payload = payload_map[i];
-        
-        // Skip hidden payloads
-        if (!isPayloadVisible(payload.id)) {
-            continue;
-        }
-        
-        // Get the active version for this payload
+        if (!isPayloadVisible(payload.id)) continue;
+
         var versionInfo = resolveActiveVersion(payload);
-        if (!versionInfo || !versionInfo.filePath) {
-            continue;
-        }
-        
+        if (!versionInfo || !versionInfo.filePath) continue;
+
         // Skip default versions (already in AppCache)
-        // Find the actual version object to check isDefault flag
         var isDefault = false;
         if (payload.versions && payload.versions.length > 0) {
             for (var j = 0; j < payload.versions.length; j++) {
                 if (payload.versions[j].version === versionInfo.version) {
-                    isDefault = payload.versions[j].isDefault;
+                    isDefault = !!payload.versions[j].isDefault;
                     break;
                 }
             }
         }
-        
-        if (isDefault) {
-            continue;
-        }
-        
-        // Fire-and-forget fetch to pre-load into HTTP cache
-        count++;
-        fetch(versionInfo.filePath, { cache: "default" })
-            ["catch"](function(err) {
-                // Silently ignore errors
-            });
+        if (isDefault) continue;
+
+        // Skip versions already pre-fetched in a previous Settings exit
+        var key = payload.id + "@" + versionInfo.version;
+        if (prefetched[key]) continue;
+
+        toFetch.push({ id: payload.id, version: versionInfo.version, path: versionInfo.filePath });
     }
-    
-    // Show brief notification if we're caching anything
-    if (count > 0) {
-        showToast("Caching selected payloads...", 2000);
+
+    if (toFetch.length === 0) return;
+
+    var toast = showToast("Caching " + toFetch.length + " payload(s) for offline use...", -1);
+    var ok = 0, failed = 0;
+
+    for (var k = 0; k < toFetch.length; k++) {
+        var item = toFetch[k];
+        if (toast) updateToastMessage(toast, "Caching " + (k + 1) + "/" + toFetch.length + ": " + item.id + " v" + item.version);
+        try {
+            var resp = await fetch(item.path, { cache: "default" });
+            if (resp && resp.ok) {
+                // Read body so the HTTP cache actually stores it.
+                await resp.arrayBuffer();
+                if (typeof markVersionPrefetched === "function") {
+                    markVersionPrefetched(item.id, item.version);
+                }
+                ok++;
+            } else {
+                failed++;
+            }
+        } catch (e) {
+            failed++;
+        }
+    }
+
+    if (toast) {
+        var msg = "Cached " + ok + " of " + toFetch.length + " payload(s)";
+        if (failed > 0) msg += " (" + failed + " failed)";
+        updateToastMessage(toast, msg);
+        setTimeout(function () { removeToast(toast); }, 3000);
     }
 }
 

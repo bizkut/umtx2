@@ -188,6 +188,7 @@ import subprocess
 from pathlib import Path
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 try:
     import yaml
@@ -210,11 +211,75 @@ PAYLOAD_CONFIG_FILE = REPO_ROOT / ".github" / "payloads.yaml"
 MAX_VERSIONS_PER_PAYLOAD = 999  # Effectively unlimited - fetch all available versions
 CUSTOM_ACTION_APPCACHE_REMOVE = "appcache-remove"
 
+# Identifier allowlists. Reject anything that could become a path-traversal
+# segment, an argv flag, or a manifest-injection token.
+PAYLOAD_ID_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+VERSION_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$')
+FILENAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\.(?:elf|bin)$')
+SOURCE_REPO_RE = re.compile(r'^[A-Za-z0-9._-]{1,39}/[A-Za-z0-9._-]{1,100}$')
+TAG_RE = re.compile(r'^[A-Za-z0-9._+/-]{1,128}$')
+
+# Outbound HTTP allowlist for payload downloads. Anything outside this set is
+# rejected before requests.get fires, regardless of whether YAML or upstream
+# JSON supplied it.
+ALLOWED_DOWNLOAD_HOSTS = {
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "codeload.github.com",
+    "release-assets.githubusercontent.com",
+    "raw.githubusercontent.com",
+}
+
 # Version author patterns for license detection
 AUTHOR_PATTERNS = {
     "MIT": ["john-tornblom"],
     "GPL": ["LightningMods", "sleirsgoevy", "EchoStretch"],
 }
+
+
+def assert_under(path: Path, base: Path) -> Path:
+    """Resolve `path` and confirm it stays within `base`.
+
+    Returns the resolved path on success. Raises ValueError on traversal —
+    catches `..` segments, symlink escapes, and absolute-path overrides.
+    """
+    resolved = path.resolve()
+    base_resolved = base.resolve()
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        raise ValueError(
+            f"Path escape detected: {path} resolves to {resolved} "
+            f"which is outside {base_resolved}"
+        )
+    return resolved
+
+
+def validate_identifier(value: str, regex: re.Pattern, name: str) -> None:
+    """Reject identifiers that don't match the allowlist regex."""
+    if not isinstance(value, str) or not regex.match(value):
+        raise ValueError(f"Invalid {name}: {value!r}")
+
+
+def validate_download_url(url: str) -> None:
+    """Reject URLs outside the allowlist or with non-https schemes.
+
+    Closes the SSRF / supply-chain primitive where a YAML or upstream-JSON
+    URL could pivot the runner to fetch arbitrary content. Also rejects
+    redirect chains by forcing allow_redirects=False at the call site.
+    """
+    if not isinstance(url, str) or not url:
+        raise ValueError("download URL must be a non-empty string")
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"refusing non-https URL: {url!r}")
+    host = (parsed.hostname or "").lower()
+    if host not in ALLOWED_DOWNLOAD_HOSTS:
+        raise ValueError(
+            f"refusing host outside allowlist: {host!r} "
+            f"(allowed: {sorted(ALLOWED_DOWNLOAD_HOSTS)})"
+        )
 
 
 def calculate_file_hash(file_path: Path) -> str:
@@ -226,10 +291,34 @@ def calculate_file_hash(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
-def download_file(url: str, dest_path: Path) -> tuple[str, int]:
-    """Download a file from URL and return (hash, size)."""
+def download_file(url: str, dest_path: Path, expected_sha256: Optional[str] = None) -> tuple[str, int]:
+    """Download a file from URL and return (hash, size).
+
+    Enforces:
+      - URL scheme/host allowlist (anti-SSRF)
+      - dest_path containment within PAYLOADS_DIR (anti path-traversal)
+      - allow_redirects=False with manual single-hop validation
+      - Optional pinned-SHA256 verification: if expected_sha256 is provided,
+        the download is rejected unless the computed digest matches.
+    """
+    validate_download_url(url)
+    assert_under(dest_path.parent, PAYLOADS_DIR)
+
     print(f"  Downloading: {url}")
-    response = requests.get(url, stream=True, timeout=60)
+    response = requests.get(url, stream=True, timeout=60, allow_redirects=False)
+
+    # Walk a single redirect manually, re-validating the target host.
+    redirect_hops = 0
+    while response.is_redirect and redirect_hops < 5:
+        next_url = response.headers.get("Location", "")
+        if next_url.startswith("/"):
+            base = urlparse(url)
+            next_url = f"{base.scheme}://{base.netloc}{next_url}"
+        response.close()
+        validate_download_url(next_url)
+        url = next_url
+        response = requests.get(url, stream=True, timeout=60, allow_redirects=False)
+        redirect_hops += 1
     response.raise_for_status()
 
     temp_path = dest_path.with_suffix('.tmp')
@@ -239,6 +328,15 @@ def download_file(url: str, dest_path: Path) -> tuple[str, int]:
 
     file_hash = calculate_file_hash(temp_path)
     file_size = temp_path.stat().st_size
+
+    if expected_sha256:
+        if file_hash.lower() != expected_sha256.lower():
+            temp_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"Hash mismatch for {dest_path.name}: "
+                f"expected {expected_sha256}, got {file_hash}"
+            )
+
     temp_path.rename(dest_path)
 
     print(f"  Saved: {dest_path.name} ({file_size} bytes, hash: {file_hash[:16]}...)")
@@ -275,10 +373,15 @@ def detect_license(repo: str, manual_license: Dict[str, str]) -> Dict[str, str]:
     # Priority 1: Manual override
     if manual_license.get('type'):
         return manual_license
-    
+
+    if not SOURCE_REPO_RE.match(repo or ""):
+        return {"type": "Unknown", "url": ""}
+
     try:
+        # `--` separator forces gh to treat `repo` as a positional argument
+        # even if it begins with `-` (defense-in-depth on top of the regex).
         result = subprocess.run(
-            ["gh", "repo", "view", repo, "--json", "licenseInfo"],
+            ["gh", "repo", "view", "--json", "licenseInfo", "--", repo],
             capture_output=True, text=True, timeout=15
         )
         if result.returncode == 0:
@@ -302,11 +405,14 @@ def detect_firmware_compatibility(repo: str, manual_firmwares: List[str]) -> Lis
     # Priority 1: Manual override
     if manual_firmwares:
         return manual_firmwares
-    
+
+    if not SOURCE_REPO_RE.match(repo or ""):
+        return []
+
     # Priority 2: GitHub topics
     try:
         result = subprocess.run(
-            ["gh", "repo", "view", repo, "--json", "repositoryTopics"],
+            ["gh", "repo", "view", "--json", "repositoryTopics", "--", repo],
             capture_output=True, text=True, timeout=15
         )
         if result.returncode == 0:
@@ -367,16 +473,20 @@ def detect_firmware_compatibility(repo: str, manual_firmwares: List[str]) -> Lis
 
 def get_github_releases(repo: str, max_releases: int = MAX_VERSIONS_PER_PAYLOAD) -> List[Dict]:
     """Get releases from a GitHub repo using gh CLI.
-    
+
     Note: 'gh release list' does NOT support 'body' field.
     Only available fields: createdAt, isDraft, isImmutable, isLatest,
     isPrerelease, name, publishedAt, tagName.
     Use get_release_details() to fetch body/assets per release.
     """
+    if not SOURCE_REPO_RE.match(repo or ""):
+        print(f"  Warning: invalid sourceRepo format: {repo!r}")
+        return []
     try:
         result = subprocess.run(
             ["gh", "release", "list", "--repo", repo, "--json",
-             "tagName,name,isPrerelease", "--limit", str(max_releases)],
+             "tagName,name,isPrerelease,isImmutable,publishedAt",
+             "--limit", str(max_releases)],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
@@ -404,11 +514,20 @@ def get_release_details(repo: str, tag: str) -> Optional[Dict]:
         dict with keys: body, url, assets, publishedAt
         None if fetch fails or repo not found (404)
     """
+    if not SOURCE_REPO_RE.match(repo or ""):
+        print(f"  Warning: invalid sourceRepo format: {repo!r}")
+        return None
+    if not TAG_RE.match(tag or "") or tag.startswith("-"):
+        print(f"  Warning: refusing suspicious tag: {tag!r}")
+        return None
+
     try:
-        # FIXED: Now requests 'publishedAt' instead of 'createdAt'
+        # `--repo`/`--json` are flags so they consume the following token;
+        # `tag` is the only positional after `view` and the regex above
+        # has already rejected leading-dash and shell-metachar shapes.
         result = subprocess.run(
             ["gh", "release", "view", tag, "--repo", repo,
-             "--json", "body,url,assets,publishedAt"],
+             "--json", "body,url,assets,publishedAt,isImmutable"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
@@ -497,7 +616,11 @@ def update_payload_from_github_release(payload_config: Dict, metadata: Dict) -> 
     pattern = payload_config.get('sourcePattern', '*.elf')
     payload_id = payload_config['id']
     versions = []
-    
+
+    validate_identifier(payload_id, PAYLOAD_ID_RE, "payload id")
+    if repo:
+        validate_identifier(repo, SOURCE_REPO_RE, "sourceRepo")
+
     # Preserve existing versions from metadata to prevent data loss
     existing_versions = {v['version']: v for v in metadata.get('versions', [])}
 
@@ -509,7 +632,15 @@ def update_payload_from_github_release(payload_config: Dict, metadata: Dict) -> 
 
     for i, release in enumerate(releases[:MAX_VERSIONS_PER_PAYLOAD]):
         tag = release.get('tagName', '')
+        # Reject tags with shell-meta or argv-flag shapes before they ever
+        # reach the gh subprocess argv or the filesystem path components.
+        if not TAG_RE.match(tag or "") or tag.startswith("-"):
+            print(f"  Skipping release with suspicious tag: {tag!r}")
+            continue
         version = tag.lstrip('v')
+        if not VERSION_RE.match(version or ""):
+            print(f"  Skipping release with unsafe version: {version!r}")
+            continue
         is_prerelease = release.get('isPrerelease', False)
 
         # Step 2: Get release details (body, url, assets, publishedAt) via gh release view
@@ -547,29 +678,47 @@ def update_payload_from_github_release(payload_config: Dict, metadata: Dict) -> 
             continue
 
         file_name = matched['name']
+        if not FILENAME_RE.match(file_name or ""):
+            print(f"  Skipping asset with unsafe filename: {file_name!r}")
+            continue
         download_url = matched.get('url', '')
         if not download_url:
             download_url = f"https://github.com/{repo}/releases/download/{tag}/{file_name}"
 
-        # Create version directory
+        # Create version directory (containment-checked).
         version_dir = PAYLOADS_DIR / payload_id / version
+        assert_under(version_dir, PAYLOADS_DIR)
         version_dir.mkdir(parents=True, exist_ok=True)
-        
-        dest_path = version_dir / file_name
 
-        # Check if we already have this exact file
+        dest_path = version_dir / file_name
+        assert_under(dest_path, PAYLOADS_DIR)
+
+        # Hash pinning: if the existing metadata records a hash for this
+        # version, treat it as authoritative — any mismatch (whether from
+        # tag re-push or upstream substitution) aborts the update.
+        existing_hash_pin = (existing_versions.get(version) or {}).get('hash') or ""
+
         file_hash = ""
         file_size = 0
-        
+
         if dest_path.exists():
             existing_hash = calculate_file_hash(dest_path)
             existing_size = dest_path.stat().st_size
             print(f"  Already exists: {file_name}")
+            if existing_hash_pin and existing_hash.lower() != existing_hash_pin.lower():
+                raise ValueError(
+                    f"Local hash drift for {payload_id}@{version}: "
+                    f"recorded {existing_hash_pin}, on disk {existing_hash}"
+                )
             file_hash = existing_hash
             file_size = existing_size
         else:
             try:
-                file_hash, file_size = download_file(download_url, dest_path)
+                # download_file enforces URL allowlist + redirect re-validation
+                # + (optional) pinned-hash verification.
+                file_hash, file_size = download_file(
+                    download_url, dest_path, expected_sha256=existing_hash_pin or None
+                )
             except Exception as e:
                 print(f"  Error downloading {file_name}: {e}")
                 # Preserve existing version if download fails
@@ -616,10 +765,22 @@ def update_payload_from_github_release(payload_config: Dict, metadata: Dict) -> 
     seen_versions = {v['version'] for v in versions}
     for ver_key, ver_data in existing_versions.items():
         if ver_key not in seen_versions:
-            # Check if the binary still exists on disk
+            # Validate identifiers before letting them touch the filesystem.
+            if not VERSION_RE.match(ver_key or ""):
+                print(f"  Skipping preserved version with unsafe key: {ver_key!r}")
+                continue
             ver_file = ver_data.get('fileName', '')
-            ver_path = PAYLOADS_DIR / payload_id / ver_key / ver_file
-            if ver_file and ver_path.exists():
+            if ver_file and not FILENAME_RE.match(ver_file):
+                print(f"  Skipping preserved version with unsafe fileName: {ver_file!r}")
+                continue
+            ver_path = PAYLOADS_DIR / payload_id / ver_key / ver_file if ver_file else None
+            if ver_path is not None:
+                try:
+                    assert_under(ver_path, PAYLOADS_DIR)
+                except ValueError as e:
+                    print(f"  Skipping preserved version (path escape): {e}")
+                    continue
+            if ver_path is not None and ver_path.exists():
                 print(f"  Preserving orphaned version (not in GitHub releases): {ver_key}")
                 versions.append(ver_data)
             else:
@@ -647,10 +808,28 @@ def update_payload_from_direct(payload_config: Dict, metadata: Dict) -> List[Dic
     versions = []
     existing_versions = {v['version']: v for v in metadata.get('versions', [])}
 
+    payload_id = payload_config['id']
+    validate_identifier(payload_id, PAYLOAD_ID_RE, "payload id")
+
+    today_iso = date.today().isoformat()
+
     for ver_config in payload_config.get('manualVersions', []):
         file_name = ver_config['fileName']
         download_url = ver_config.get('url', '')
         version = ver_config['version']
+        release_date = ver_config.get('releaseDate', '') or ''
+        expected_sha256 = (ver_config.get('expectedSha256') or '').strip()
+
+        validate_identifier(version, VERSION_RE, f"version for {payload_id}")
+
+        # Reject future-dated entries — closes the isDefault-recompute abuse
+        # where an attacker writes releaseDate: "2099-..." to displace the
+        # genuine default version.
+        if release_date and release_date > today_iso:
+            raise ValueError(
+                f"manualVersions[{payload_id}@{version}] has future releaseDate "
+                f"{release_date!r}; refusing"
+            )
 
         # Skip empty filenames (custom actions)
         if not file_name:
@@ -661,46 +840,64 @@ def update_payload_from_direct(payload_config: Dict, metadata: Dict) -> List[Dic
                 'downloadUrl': download_url,
                 'hash': '',
                 'fileSize': 0,
-                'releaseDate': ver_config.get('releaseDate', ''),
+                'releaseDate': release_date,
                 'isDefault': False,  # Will be set by releaseDate-based sort below
                 'isPreRelease': False,
                 'changelog': []
             })
             continue
 
-        # Create version directory
-        version_dir = PAYLOADS_DIR / payload_config['id'] / version
+        if not FILENAME_RE.match(file_name):
+            raise ValueError(
+                f"manualVersions[{payload_id}@{version}].fileName {file_name!r} "
+                f"is not a safe ELF/BIN filename"
+            )
+
+        version_dir = PAYLOADS_DIR / payload_id / version
+        assert_under(version_dir, PAYLOADS_DIR)
         version_dir.mkdir(parents=True, exist_ok=True)
-        
+
         dest_path = version_dir / file_name
+        assert_under(dest_path, PAYLOADS_DIR)
+
+        # Hash pin source preference: explicit `expectedSha256:` in YAML
+        # takes precedence over the previously-recorded hash in metadata.
+        existing_hash_pin = expected_sha256 or (existing_versions.get(version) or {}).get('hash') or ""
 
         if dest_path.exists():
             existing_hash = calculate_file_hash(dest_path)
             existing_size = dest_path.stat().st_size
             print(f"  Already exists: {file_name}")
+            if existing_hash_pin and existing_hash.lower() != existing_hash_pin.lower():
+                raise ValueError(
+                    f"Local hash drift for {payload_id}@{version}: "
+                    f"recorded {existing_hash_pin}, on disk {existing_hash}"
+                )
             versions.append({
                 'version': version,
                 'fileName': file_name,
-                'filePath': f"payloads/{payload_config['id']}/{version}/{file_name}",
+                'filePath': f"payloads/{payload_id}/{version}/{file_name}",
                 'downloadUrl': download_url,
                 'hash': existing_hash,
                 'fileSize': existing_size,
-                'releaseDate': ver_config.get('releaseDate', ''),
+                'releaseDate': release_date,
                 'isDefault': False,  # Will be set by releaseDate-based sort below
                 'isPreRelease': False,
                 'changelog': []
             })
         elif download_url:
             try:
-                file_hash, file_size = download_file(download_url, dest_path)
+                file_hash, file_size = download_file(
+                    download_url, dest_path, expected_sha256=existing_hash_pin or None
+                )
                 versions.append({
                     'version': version,
                     'fileName': file_name,
-                    'filePath': f"payloads/{payload_config['id']}/{version}/{file_name}",
+                    'filePath': f"payloads/{payload_id}/{version}/{file_name}",
                     'downloadUrl': download_url,
                     'hash': file_hash,
                     'fileSize': file_size,
-                    'releaseDate': ver_config.get('releaseDate', ''),
+                    'releaseDate': release_date,
                     'isDefault': False,  # Will be set by releaseDate-based sort below
                     'isPreRelease': False,
                     'changelog': []
@@ -730,7 +927,9 @@ def update_payload_from_direct(payload_config: Dict, metadata: Dict) -> List[Dic
 
 def load_metadata(payload_id: str) -> Dict:
     """Load existing metadata.json for a payload."""
+    validate_identifier(payload_id, PAYLOAD_ID_RE, "payload id")
     metadata_path = PAYLOADS_DIR / payload_id / "metadata.json"
+    assert_under(metadata_path, PAYLOADS_DIR)
     if metadata_path.exists():
         try:
             with open(metadata_path, 'r') as f:
@@ -749,7 +948,9 @@ def json_serial(obj):
 
 def save_metadata(payload_id: str, metadata: Dict):
     """Save metadata.json for a payload."""
+    validate_identifier(payload_id, PAYLOAD_ID_RE, "payload id")
     metadata_path = PAYLOADS_DIR / payload_id / "metadata.json"
+    assert_under(metadata_path.parent, PAYLOADS_DIR)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2, default=json_serial)
@@ -833,28 +1034,41 @@ def generate_payload_map_js(payloads_config: List[Dict]) -> str:
             for a in authors
         ]) if authors else "[]"
 
+        # Use json.dumps for every string field so that any `"`, `\`, or
+        # control char in upstream/YAML data cannot break out of the JS
+        # string literal and execute at module load. This closes the
+        # "raw f-string interpolation into JS" hardening note from the
+        # XSS audit.
+        def jstr(v):
+            return json.dumps("" if v is None else str(v))
+
+        author_str = ", ".join(authors) if isinstance(authors, list) else (authors or "")
+
         lines.append("    {")
-        lines.append(f'        id: "{payload["id"]}",')
-        lines.append(f'        displayTitle: "{payload["displayTitle"]}",')
-        lines.append(f'        description: "{payload["description"]}",')
-        lines.append(f'        author: "{", ".join(authors) if isinstance(authors, list) else authors}",')
+        lines.append(f'        id: {jstr(payload["id"])},')
+        lines.append(f'        displayTitle: {jstr(payload["displayTitle"])},')
+        lines.append(f'        description: {jstr(payload["description"])},')
+        lines.append(f'        author: {jstr(author_str)},')
         lines.append(f'        authors: {authors_json},')
-        lines.append(f'        projectUrl: "{payload["projectUrl"]}",')
-        lines.append(f'        license: {{type: "{license_info.get("type", "Unknown")}", url: "{license_info.get("url", "")}"}},')
-        lines.append(f'        sourceType: "{payload["sourceType"]}",')
-        lines.append(f'        sourceRepo: "{payload["sourceRepo"]}",')
+        lines.append(f'        projectUrl: {jstr(payload["projectUrl"])},')
+        lines.append(
+            f'        license: {{type: {jstr(license_info.get("type", "Unknown"))}, '
+            f'url: {jstr(license_info.get("url", ""))}}},'
+        )
+        lines.append(f'        sourceType: {jstr(payload["sourceType"])},')
+        lines.append(f'        sourceRepo: {jstr(payload["sourceRepo"])},')
 
         # versions array
         lines.append("        versions: [")
         for ver in payload.get('versions', []):
             lines.append("            {")
-            lines.append(f'                version: "{ver["version"]}",')
-            lines.append(f'                fileName: "{ver["fileName"]}",')
-            lines.append(f'                filePath: "{ver.get("filePath", "")}",')
-            lines.append(f'                downloadUrl: "{ver["downloadUrl"]}",')
-            lines.append(f'                hash: "{ver["hash"]}",')
-            lines.append(f'                fileSize: {ver["fileSize"]},')
-            lines.append(f'                releaseDate: "{ver["releaseDate"]}",')
+            lines.append(f'                version: {jstr(ver["version"])},')
+            lines.append(f'                fileName: {jstr(ver["fileName"])},')
+            lines.append(f'                filePath: {jstr(ver.get("filePath", ""))},')
+            lines.append(f'                downloadUrl: {jstr(ver["downloadUrl"])},')
+            lines.append(f'                hash: {jstr(ver["hash"])},')
+            lines.append(f'                fileSize: {int(ver["fileSize"])},')
+            lines.append(f'                releaseDate: {jstr(ver["releaseDate"])},')
             lines.append(f'                isDefault: {"true" if ver["isDefault"] else "false"},')
             lines.append(f'                isPreRelease: {"true" if ver.get("isPreRelease", False) else "false"},')
             lines.append(f'                changelog: {json.dumps(ver.get("changelog", []))}')
@@ -961,9 +1175,10 @@ def main():
         
         print(f"  Found {len(versions)} version(s)")
 
-    # SAFETY: Detect orphaned payloads (on disk but not in payloads.yaml)
-    # This prevents accidental data loss when a payload is manually added
-    # to payload_map.js but forgotten from payloads.yaml.
+    # SAFETY: Reject orphaned payloads (on disk but not in payloads.yaml).
+    # Hard-fail rather than auto-publish: this closes the supply-chain
+    # delivery path where a PR adds a payload directory only (no YAML
+    # change) and relies on the orphan loop to ship the bytes anyway.
     configured_ids = {p['id'] for p in config['payloads']}
     orphaned_payloads = []
 
@@ -976,42 +1191,18 @@ def main():
                 continue
             payload_id = payload_dir.name
             if payload_id not in configured_ids:
-                print(f"\n  ⚠ WARNING: Orphaned payload detected: '{payload_id}'")
-                print(f"    This payload exists on disk but is NOT in payloads.yaml!")
-                print(f"    Including from existing metadata to prevent data loss.")
-                try:
-                    with open(metadata_file, 'r') as f:
-                        orphan_meta = json.load(f)
-                    orphan_entry = {
-                        'id': payload_id,
-                        'displayTitle': orphan_meta.get('displayTitle', payload_id),
-                        'description': orphan_meta.get('description', ''),
-                        'authors': orphan_meta.get('authors', []),
-                        'projectUrl': orphan_meta.get('projectUrl', ''),
-                        'sourceType': orphan_meta.get('sourceType', 'direct'),
-                        'sourceRepo': orphan_meta.get('sourceRepo', ''),
-                        'versions': orphan_meta.get('versions', []),
-                        'supportedFirmwares': orphan_meta.get('supportedFirmwares', []),
-                        'willHideEveryTime': orphan_meta.get('willHideEveryTime', False),
-                    }
-                    if orphan_meta.get('toPort'):
-                        orphan_entry['toPort'] = orphan_meta['toPort']
-                    if orphan_meta.get('customAction'):
-                        orphan_entry['customAction'] = orphan_meta['customAction']
-                    config['payloads'].append(orphan_entry)
-                    orphaned_payloads.append(payload_id)
-                except Exception as e:
-                    print(f"    ERROR: Could not load metadata for '{payload_id}': {e}")
+                orphaned_payloads.append(payload_id)
 
     if orphaned_payloads:
-        print(f"\n{'=' * 60}")
-        print(f"  ⚠ {len(orphaned_payloads)} ORPHANED PAYLOAD(S) DETECTED:")
+        print(f"\n{'=' * 60}", file=sys.stderr)
+        print(f"  ERROR: {len(orphaned_payloads)} orphaned payload(s) on disk", file=sys.stderr)
         for oid in orphaned_payloads:
-            print(f"    - {oid}")
-        print(f"  These payloads are NOT in .github/payloads.yaml.")
-        print(f"  They have been included from existing metadata to prevent data loss.")
-        print(f"  ACTION REQUIRED: Add them to payloads.yaml to silence this warning.")
-        print(f"{'=' * 60}")
+            print(f"    - {oid}", file=sys.stderr)
+        print(f"  These directories exist under document/en/ps5/payloads/", file=sys.stderr)
+        print(f"  but are NOT declared in .github/payloads.yaml.", file=sys.stderr)
+        print(f"  Add a YAML entry per payload, or remove the directory.", file=sys.stderr)
+        print(f"{'=' * 60}", file=sys.stderr)
+        sys.exit(1)
 
     # Generate new payload_map.js
     new_content = generate_payload_map_js(config['payloads'])

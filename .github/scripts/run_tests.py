@@ -316,6 +316,104 @@ def test_appcache():
     
     print_success(f"cache.appcache is valid ({len(cached_files)} files cached)")
 
+def test_cache_payload_sync():
+    """Verify every default version in payload_map.js is in cache.appcache.
+
+    This is the test the previous (reverted) cache fix was missing in
+    practice: it pins the contract that cache.appcache must contain every
+    file path that the runtime might fetch by default. Without it, an
+    elfldr-style hardcoded path can silently 404 when offline.
+    """
+    print_info("Checking cache.appcache vs payload_map.js sync...")
+
+    payload_map_file = BASE_DIR / "payload_map.js"
+    appcache_file = BASE_DIR / "cache.appcache"
+
+    if not payload_map_file.exists():
+        raise AssertionError("payload_map.js not found")
+    if not appcache_file.exists():
+        raise AssertionError("cache.appcache not found")
+
+    with open(payload_map_file) as f:
+        pm_content = f.read()
+    with open(appcache_file) as f:
+        ac_content = f.read()
+
+    # Mirror appcache_manifest_generator.py's extraction logic exactly so
+    # the test passes iff the generator would have included the path.
+    default_paths = set()
+    for fp_match in re.finditer(r'filePath:\s*"([^"]*)"', pm_content):
+        if not fp_match.group(1):
+            continue
+        lookahead = pm_content[fp_match.end():fp_match.end() + 500]
+        if re.search(r'isDefault:\s*true', lookahead):
+            default_paths.add(fp_match.group(1))
+
+    cached_paths = set()
+    for line in ac_content.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('CACHE') or line.startswith('NETWORK') or line == '*':
+            continue
+        path = line.split('#')[0].strip()
+        if path:
+            cached_paths.add(path)
+
+    cached_lower = {p.lower() for p in cached_paths}
+    missing = sorted([dp for dp in default_paths if dp.lower() not in cached_lower])
+
+    if missing:
+        raise AssertionError(
+            f"cache.appcache missing {len(missing)} default version(s):\n  - " +
+            "\n  - ".join(missing)
+        )
+
+    print_success(f"All {len(default_paths)} default versions are in cache.appcache")
+
+
+def test_no_hardcoded_payload_paths():
+    """Detect hardcoded payload paths in main.js that bypass payload_map.
+
+    Hardcoded paths like 'payloads/elfldr/latest/...' are a footgun: they
+    work online (the file exists on disk) but break offline (cache.appcache
+    only contains versioned default paths). Resolve via payload_map instead.
+    """
+    print_info("Checking for hardcoded payload paths in main.js...")
+
+    main_js = BASE_DIR / "main.js"
+    if not main_js.exists():
+        raise AssertionError("main.js not found")
+
+    with open(main_js) as f:
+        raw = f.read()
+
+    # Strip /* ... */ block comments and // line comments before scanning so
+    # examples in JSDoc and inline comments don't trip the test.
+    no_block = re.sub(r'/\*[\s\S]*?\*/', '', raw)
+    no_comments = re.sub(r'//[^\n]*', '', no_block)
+
+    hardcoded_pattern = re.compile(
+        r'"payloads/[a-z0-9_-]+/(latest|[\d.]+[a-zA-Z\-]*)/[\w.\-]+\.(?:elf|bin)"'
+    )
+
+    # Fallback constants that are intentional (only used when payload_map
+    # is unavailable). Keep this list short and explicit.
+    allowlist_versions = {'0.22.2'}
+
+    actual_matches = []
+    for m in hardcoded_pattern.finditer(no_comments):
+        if m.group(1) in allowlist_versions:
+            continue
+        actual_matches.append(m.group(0))
+
+    if actual_matches:
+        raise AssertionError(
+            "Found hardcoded payload paths (use resolveActiveVersion instead):\n  - " +
+            "\n  - ".join(actual_matches)
+        )
+
+    print_success("No hardcoded payload paths detected in main.js")
+
+
 def test_global_functions():
     """Test that required global functions are exported."""
     print_info("Checking global function exports...")
@@ -424,6 +522,8 @@ def main():
         ("HTML References", test_html_references),
         ("Payload Map", test_payload_map),
         ("AppCache", test_appcache),
+        ("Cache-PayloadMap Sync", test_cache_payload_sync),
+        ("No Hardcoded Payload Paths", test_no_hardcoded_payload_paths),
         ("Global Functions", test_global_functions),
         ("CSS Validity", test_css_validity),
         ("Firmware Offsets", test_firmware_offsets),

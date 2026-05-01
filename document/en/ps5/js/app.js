@@ -29,6 +29,23 @@ updateClock();
 // === RUN / EXPLOIT ENTRY POINT ===
 // =====================================================
 
+/**
+ * Read the current retry count from sessionStorage. Resets to 0 when the
+ * tab is closed, so a fresh manual launch always starts the budget over.
+ */
+function getExploitRetryCount() {
+    try {
+        return parseInt(sessionStorage.getItem(window.SESSIONSTORE_EXPLOIT_RETRY_KEY) || "0", 10) || 0;
+    } catch (e) { return 0; }
+}
+
+function setExploitRetryCount(n) {
+    try {
+        if (n <= 0) sessionStorage.removeItem(window.SESSIONSTORE_EXPLOIT_RETRY_KEY);
+        else sessionStorage.setItem(window.SESSIONSTORE_EXPLOIT_RETRY_KEY, String(n));
+    } catch (e) { /* ignore */ }
+}
+
 async function run(wkonly, animate) {
     if (wkonly === undefined) wkonly = false;
     if (animate === undefined) animate = true;
@@ -39,6 +56,9 @@ async function run(wkonly, animate) {
     window.exploitStarted = true;
 
     await switchPage("console-view", animate);
+
+    var maxRetries = window.MAX_EXPLOIT_RETRIES || 5;
+    var retryCount = getExploitRetryCount();
 
     // not setting it in the catch since we want to retry both on a handled error and on a browser crash
     sessionStorage.setItem(SESSIONSTORE_ON_LOAD_AUTORUN_KEY, wkonly ? "wkonly" : "kernel");
@@ -54,11 +74,25 @@ async function run(wkonly, animate) {
     } catch (error) {
         log("Webkit exploit failed: " + error, LogLevel.ERROR);
 
-        log("Retrying in 2 seconds...", LogLevel.LOG);
+        if (retryCount >= maxRetries) {
+            log("Max retries (" + maxRetries + ") reached. Auto-retry stopped.", LogLevel.ERROR);
+            log("Tap Jailbreak again to retry manually.", LogLevel.LOG);
+            sessionStorage.removeItem(SESSIONSTORE_ON_LOAD_AUTORUN_KEY);
+            setExploitRetryCount(0);
+            window.exploitStarted = false;
+            return;
+        }
+
+        setExploitRetryCount(retryCount + 1);
+        log("Retrying in 2 seconds... (attempt " + (retryCount + 1) + "/" + maxRetries + ")", LogLevel.LOG);
         await new Promise(function (resolve) { setTimeout(resolve, 2000); });
         window.location.reload();
         return; // this is necessary
     }
+
+    // Webkit stage cleared — reset the retry counter so a later kernel
+    // failure doesn't share budget with earlier webkit failures.
+    setExploitRetryCount(0);
 
     try {
         await main(window.p, wkonly); // if all goes well, this should block forever
@@ -77,8 +111,25 @@ async function run(wkonly, animate) {
 // === EVENT HANDLERS ===
 // =====================================================
 
+/**
+ * Append an entry to the AppCache debug log in localStorage. Capped at 50
+ * entries (FIFO). Surfaced via Dev Options → "View AppCache Log" so users
+ * can paste it into bug reports when something goes wrong.
+ */
+function logAppCacheEvent(name, detail) {
+    try {
+        var key = window.LOCALSTORE_APPCACHE_DEBUG_KEY || "appcache_debug_log";
+        var raw = localStorage.getItem(key);
+        var entries = raw ? JSON.parse(raw) : [];
+        entries.push({ t: Date.now(), name: name, detail: detail || null, online: navigator.onLine });
+        while (entries.length > 50) entries.shift();
+        localStorage.setItem(key, JSON.stringify(entries));
+    } catch (e) { /* localStorage full or unavailable — ignore */ }
+}
+
 function registerAppCacheEventHandlers() {
     var appCache = window.applicationCache;
+    if (!appCache) return; // Browser without AppCache support; nothing to wire up
 
     var toast;
     var toastTimeout; // Track the timeout ID
@@ -120,19 +171,22 @@ function registerAppCacheEventHandlers() {
     }
 
     appCache.addEventListener('cached', function (e) {
+        logAppCacheEvent('cached');
         finishAppCacheToast('Finished caching site.', 2000);
     }, false);
 
     appCache.addEventListener('checking', function (e) {
+        logAppCacheEvent('checking');
         createOrUpdateAppCacheToast("Checking for updates...");
     }, false);
 
     appCache.addEventListener('downloading', function (e) {
+        logAppCacheEvent('downloading');
         createOrUpdateAppCacheToast('Downloading new cache...');
     }, false);
 
     appCache.addEventListener('error', function (e) {
-        // only show error toast if we're online
+        logAppCacheEvent('error', { online: navigator.onLine });
         if (navigator.onLine) {
             finishAppCacheToast('Error while caching site.', 5000);
         } else {
@@ -141,11 +195,17 @@ function registerAppCacheEventHandlers() {
     }, false);
 
     appCache.addEventListener('noupdate', function (e) {
+        logAppCacheEvent('noupdate');
         finishAppCacheToast('Cache is up-to-date.', 1500);
     }, false);
 
     appCache.addEventListener('obsolete', function (e) {
-        finishAppCacheToast('Site is obsolete.', 5000);
+        // The manifest was removed or returned 404. The browser will use
+        // the cached copy until reload; auto-reload after a short delay so
+        // the user gets a fresh state instead of stale forever.
+        logAppCacheEvent('obsolete');
+        finishAppCacheToast('Site is obsolete. Reloading...', 3000);
+        setTimeout(function () { window.location.reload(); }, 3000);
     }, false);
 
     appCache.addEventListener('progress', function (e) {
@@ -160,8 +220,18 @@ function registerAppCacheEventHandlers() {
     }, false);
 
     appCache.addEventListener('updateready', function (e) {
+        logAppCacheEvent('updateready');
         if (window.applicationCache.status == window.applicationCache.UPDATEREADY) {
-            finishAppCacheToast('The site was updated. Refresh to switch to updated version.', 10000);
+            finishAppCacheToast('The site was updated. Reloading in 10s...', 10000);
+            // Auto-reload after the toast so the user picks up the new
+            // cache without having to manually refresh. Skip if they've
+            // already started the exploit chain.
+            setTimeout(function () {
+                if (!window.exploitStarted &&
+                    window.applicationCache.status == window.applicationCache.UPDATEREADY) {
+                    window.location.reload();
+                }
+            }, 10000);
         }
     }, false);
 }
@@ -193,15 +263,27 @@ function registerL2ButtonHandler() {
             }
         }
 
-        // L2 button (keyCode 118) - Redirect
+        // L2 button (keyCode 118) - Redirect.
+        // Scheme allowlist: only accept http(s) URLs that parse cleanly,
+        // so a `javascript:` paste cannot self-XSS into the same origin.
         if (event.keyCode === 118) {
             var lastRedirectorValue = localStorage.getItem(LOCALSTORE_REDIRECTOR_LAST_URL_KEY) || "http://";
             var redirectorValue = prompt("Enter url", lastRedirectorValue);
 
-            // pressing cancel works as expected, but pressing the back button unfortunately is the same as pressing ok
             if (redirectorValue && redirectorValue !== "http://") {
-                localStorage.setItem(LOCALSTORE_REDIRECTOR_LAST_URL_KEY, redirectorValue);
-                window.location.href = redirectorValue;
+                var safeUrl = null;
+                try {
+                    var parsed = new URL(redirectorValue);
+                    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+                        safeUrl = parsed.toString();
+                    }
+                } catch (e) { /* malformed URL — falls through */ }
+                if (!safeUrl) {
+                    showToast("Only http(s) URLs are allowed", TOAST_ERROR_TIMEOUT);
+                    return;
+                }
+                localStorage.setItem(LOCALSTORE_REDIRECTOR_LAST_URL_KEY, safeUrl);
+                window.location.href = safeUrl;
             }
         }
 

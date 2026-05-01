@@ -4,12 +4,6 @@ on:
   push:
     branches: ["main"]
   workflow_dispatch:
-    inputs:
-      force_payload_update:
-        description: 'Force payload update even if no changes'
-        required: false
-        default: 'false'
-        type: boolean
   # Twice daily: 06:00 and 18:00 UTC
   schedule:
     - cron: '0 6 * * *'    # 06:00 UTC
@@ -49,6 +43,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Always regenerate cache.appcache so the committed manifest is in sync
+      # with the latest payload_map.js. Previously this ran in the deploy job
+      # without committing, which left the repo's cache.appcache stale and
+      # broke local testing / desync detection.
+      - name: Regenerate cache.appcache
+        run: |
+          python appcache_manifest_generator.py -d document/en/ps5
+
+      - name: Run cache/payload sync tests
+        run: |
+          python .github/scripts/run_tests.py
+
       - name: Commit changes
         if: success()
         run: |
@@ -57,16 +63,28 @@ jobs:
           if ! git diff --quiet; then
             # Get list of changed payloads
             CHANGES=$(git diff --name-only | grep 'payloads/.*/metadata.json' | sed 's|document/en/ps5/payloads/||g' | sed 's|/metadata.json||g' | tr '\n' ', ' | sed 's/,$//')
-            
-            # Create detailed commit message
-            if [ -n "$CHANGES" ]; then
-              git add .
-              git commit -m "chore(payloads): update $CHANGES
 
-          Automated payload update:
+            # Detect cache.appcache regeneration even when no payloads changed
+            CACHE_CHANGED=""
+            if git diff --name-only | grep -q 'document/en/ps5/cache.appcache'; then
+              CACHE_CHANGED="cache.appcache"
+            fi
+
+            COMMIT_SUBJECT=""
+            if [ -n "$CHANGES" ]; then
+              COMMIT_SUBJECT="chore(payloads): update $CHANGES"
+            elif [ -n "$CACHE_CHANGED" ]; then
+              COMMIT_SUBJECT="chore(cache): regenerate $CACHE_CHANGED"
+            fi
+
+            if [ -n "$COMMIT_SUBJECT" ]; then
+              git add .
+              git commit -m "$COMMIT_SUBJECT
+
+          Automated update:
           - Synced with latest GitHub releases
-          - Updated metadata and changelogs
-          - Verified compatibility
+          - Regenerated cache.appcache to match payload_map.js
+          - Verified default versions are present in cache
 
           Run: $(date '+%Y-%m-%d %H:%M UTC')"
               git push
@@ -75,7 +93,10 @@ jobs:
 
   deploy:
     needs: update-payloads
-    if: always()
+    # Only deploy when the update-payloads job (which runs the security
+    # tests + commit) succeeded. Previously this was `if: always()`, which
+    # would ship even on test failure.
+    if: ${{ needs.update-payloads.result == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -89,9 +110,9 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      - name: Run appcache_manifest_generator.py
-        run: |
-          python appcache_manifest_generator.py -d document/en/ps5
+      # cache.appcache is regenerated and committed in the update-payloads job,
+      # so we don't need to rebuild it here. This guarantees the repo's
+      # committed manifest matches what gets deployed.
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

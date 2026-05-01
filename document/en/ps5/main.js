@@ -487,7 +487,12 @@ async function main(userlandRW, wkOnly = false) {
     // }
 
     async function probe_sb_elfldr() {
-        // if the bind fails, elfldr is running so return true
+        // Probe by attempting a TCP connect to localhost:9021. This is more
+        // reliable than the previous bind() probe: bind() failed with
+        // EADDRINUSE for *any* listener on 9021 (false positive when
+        // another process happens to use the port), whereas a successful
+        // connect specifically confirms there's a listener accepting
+        // connections (i.e. elfldr is actually running and serviceable).
         let fd = (await chain.syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, 0)).low << 0;
         if (fd <= 0) {
             return false;
@@ -495,13 +500,9 @@ async function main(userlandRW, wkOnly = false) {
 
         let addr = p.malloc(0x10);
         build_addr(p, addr, AF_INET, htons(9021), 0x0100007F);
-        let bind_res = (await chain.syscall(SYS_BIND, fd, addr, 0x10)).low << 0;
+        let connect_res = (await chain.syscall(SYS_CONNECT, fd, addr, 0x10)).low << 0;
         await chain.syscall(SYS_CLOSE, fd);
-        if (bind_res < 0) {
-            return true;
-        }
-
-        return false;
+        return connect_res >= 0;
     }
 
     let is_elfldr_running = await probe_sb_elfldr();
@@ -522,6 +523,38 @@ async function main(userlandRW, wkOnly = false) {
 
     populatePayloadsPage(wkOnly);
 
+    // Look up the canonical SHA256 from payload_map for a given filePath
+    // so we can verify what we just fetched. Returns "" when the payload
+    // map is unavailable (e.g. legacy filename caller) — the caller treats
+    // empty as "no pin" and skips the check.
+    var lookup_expected_hash = function (filePath) {
+        if (!window.payload_map || !filePath) return "";
+        for (var i = 0; i < window.payload_map.length; i++) {
+            var versions = window.payload_map[i].versions || [];
+            for (var j = 0; j < versions.length; j++) {
+                if (versions[j].filePath === filePath) {
+                    return versions[j].hash || "";
+                }
+            }
+        }
+        return "";
+    };
+
+    var hex_of_buffer = async function (buffer) {
+        if (!(window.crypto && window.crypto.subtle && window.crypto.subtle.digest)) {
+            return ""; // no SubtleCrypto on this browser; caller skips compare
+        }
+        var hashBuffer = await window.crypto.subtle.digest('SHA-256', buffer);
+        var bytes = new Uint8Array(hashBuffer);
+        var hex = "";
+        for (var i = 0; i < bytes.length; i++) {
+            var h = bytes[i].toString(16);
+            if (h.length < 2) h = "0" + h;
+            hex += h;
+        }
+        return hex;
+    };
+
     var load_payload_into_elf_store_from_local_file = async function (filepathOrFilename) {
         // v2: Accept full filePath (e.g. "payloads/etahen/2.4b/etaHEN-2.4B.bin")
         // or legacy filename for backward compatibility
@@ -533,6 +566,23 @@ async function main(userlandRW, wkOnly = false) {
         }
 
         const data = await response.arrayBuffer();
+
+        // Verify the fetched bytes against the SHA256 pin from payload_map.
+        // The pin is part of the same trust origin as the payload itself
+        // (so a deployed-site compromise can substitute both), but this
+        // check catches stale-cache substitution, accidental file
+        // corruption, and CDN/proxy tampering — and surfaces them with
+        // a loud failure rather than silently running unknown code.
+        var expectedHash = lookup_expected_hash(fetchPath);
+        if (expectedHash) {
+            var actual = await hex_of_buffer(data);
+            if (actual && actual.toLowerCase() !== expectedHash.toLowerCase()) {
+                throw new Error(
+                    "Payload hash mismatch for " + fetchPath +
+                    " (expected " + expectedHash.slice(0, 16) + "..., got " + actual.slice(0, 16) + "...)"
+                );
+            }
+        }
 
         let byteArray;
         if (elf_store.backing.BYTES_PER_ELEMENT == 1) {
@@ -871,8 +921,21 @@ async function main(userlandRW, wkOnly = false) {
             }
         }
 
-        if (await load_local_elf("payloads/elfldr/latest/elfldr-ps5.elf") == 0) {
-            await log(`elfldr listening on ${ip.ip}:9021`, LogLevel.INFO);
+        // Resolve elfldr filePath dynamically from payload_map so the path
+        // always matches whatever is actually in cache.appcache.
+        let elfldrPath = "payloads/elfldr/0.22.2/elfldr-ps5.elf";
+        if (window.payload_map && window.resolveActiveVersion) {
+            for (let i = 0; i < window.payload_map.length; i++) {
+                if (window.payload_map[i].id === "elfldr") {
+                    let v = window.resolveActiveVersion(window.payload_map[i]);
+                    if (v && v.filePath) elfldrPath = v.filePath;
+                    break;
+                }
+            }
+        }
+
+        if (await load_local_elf(elfldrPath) == 0) {
+            await log(`elfldr listening on ${ip.ip}:9021 (${elfldrPath})`, LogLevel.INFO);
             is_elfldr_running = true;
         } else {
             await log("elfldr exited with non-zero code, port 9021 will likely not work", LogLevel.ERROR);
@@ -1175,15 +1238,69 @@ async function main(userlandRW, wkOnly = false) {
         ports += "9021";
     }
 
-    // @ts-ignore
-    document.getElementById('top-bar-text').innerHTML = `Listening on: <span class="fw-bold">${ip.ip}</span> (port: ${ports}) (${ip.name})`;
+    // Build the top bar via DOM API instead of innerHTML — `ip.name` and
+    // `ip.ip` come from a kernel syscall and are unlikely to contain HTML
+    // metacharacters, but textContent costs nothing and removes the sink.
+    var topBar = document.getElementById('top-bar-text');
+    if (topBar) {
+        while (topBar.firstChild) topBar.removeChild(topBar.firstChild);
+        topBar.appendChild(document.createTextNode("Listening on: "));
+        var ipSpan = document.createElement('span');
+        ipSpan.className = 'fw-bold';
+        ipSpan.textContent = ip.ip;
+        topBar.appendChild(ipSpan);
+        topBar.appendChild(document.createTextNode(" (port: " + ports + ") (" + ip.name + ")"));
+    }
 
     /** @type {Array<{payload_info: PayloadInfo, toast: HTMLElement}>} */
     let queue = [];
 
+    // Validate every dispatch request against the canonical payload_map.
+    // This closes the `willHideEveryTime`-bypass and the
+    // arbitrary-CustomEvent-injection vector: any same-origin script
+    // (including a chained payload) can fire this event, so we look up
+    // the canonical entry by id and refuse anything that isn't there or
+    // is flagged hidden.
     window.addEventListener(MAINLOOP_EXECUTE_PAYLOAD_REQUEST, async function (event) {
         /** @type {PayloadInfo} */
-        let payload_info = event.detail;
+        var requested = event.detail || {};
+        var canonical = null;
+        if (window.payload_map && requested.id) {
+            for (var i = 0; i < window.payload_map.length; i++) {
+                if (window.payload_map[i].id === requested.id) {
+                    canonical = window.payload_map[i];
+                    break;
+                }
+            }
+        }
+        if (!canonical) {
+            log("Refusing dispatch: payload id not in payload_map: " + (requested.id || "<missing>"), LogLevel.ERROR);
+            return;
+        }
+        if (canonical.willHideEveryTime) {
+            log("Refusing dispatch: payload is marked willHideEveryTime: " + canonical.id, LogLevel.ERROR);
+            return;
+        }
+
+        // Resolve the active version from the canonical entry (not from
+        // the event detail) so attacker-supplied filePath cannot redirect
+        // the fetch.
+        var resolved = (typeof window.resolveActiveVersion === 'function')
+            ? window.resolveActiveVersion(canonical)
+            : { fileName: requested.fileName || "", filePath: requested.filePath || "" };
+
+        var payload_info = {
+            id: canonical.id,
+            displayTitle: canonical.displayTitle,
+            description: canonical.description,
+            customAction: canonical.customAction,
+            toPort: canonical.toPort,
+            willHideEveryTime: canonical.willHideEveryTime,
+            version: resolved.version,
+            fileName: resolved.fileName,
+            filePath: resolved.filePath
+        };
+
         let toast = showToast(`${payload_info.displayTitle}: Waiting in queue...`, -1);
         queue.push({ payload_info, toast });
     });

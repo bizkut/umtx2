@@ -33,68 +33,105 @@ def extract_default_versions_from_payload_map(directory_path):
         content = f.read()
     
     default_paths = set()
-    
-    # Find version object blocks that contain isDefault: true.
-    # Version objects in payload_map.js are flat (no nested {}) so [^{}]*
-    # safely matches their entire content without crossing object boundaries.
-    for match in re.finditer(r'\{[^{}]*version:\s*"[^"]*"[^{}]*\}', content, re.DOTALL):
-        block = match.group(0)
-        if re.search(r'isDefault:\s*true', block):
-            fp_match = re.search(r'filePath:\s*"([^"]*)"', block)
-            if fp_match and fp_match.group(1):
-                default_paths.add(fp_match.group(1))
-    
+
+    # Find every filePath entry and check whether isDefault: true appears in
+    # the same version object (heuristic: within ~500 chars after filePath).
+    # This avoids brace-matching, which is fragile because changelog strings
+    # may legally contain unicode escapes (★, ⚠) that confused the
+    # previous \{[^{}]*\} pattern when the format evolved.
+    for fp_match in re.finditer(r'filePath:\s*"([^"]*)"', content):
+        if not fp_match.group(1):
+            continue
+        lookahead = content[fp_match.end():fp_match.end() + 500]
+        if re.search(r'isDefault:\s*true', lookahead):
+            default_paths.add(fp_match.group(1))
+
     return default_paths
+
+EXCLUDED_FILES = {'test_refresh.html'}
+EXCLUDED_DIRS = {'__pycache__', '.git', 'node_modules'}
+
 
 def generate_cache_manifest(directory_path, include_payloads=True):
     manifest = ["CACHE MANIFEST"]
     manifest.append("")
-    
-    # Get the set of default version file paths from payload_map.js
+
+    # Get the set of default version file paths from payload_map.js (these
+    # are the canonical paths the runtime will request via fetch()).
     default_paths = extract_default_versions_from_payload_map(directory_path)
-    
-    for root, _, files in os.walk(directory_path):
+    # Lowercased lookup so we can match a disk path against a payload_map
+    # entry even when macOS HFS+/APFS folded case (e.g. disk has "2.5b" but
+    # payload_map.js says "2.5B"). The MANIFEST entry, however, must always
+    # use the payload_map casing because PS5 WebKit requests are
+    # case-sensitive at HTTP level.
+    default_paths_by_lower = {p.lower(): p for p in default_paths}
+
+    # Sort os.walk output for deterministic manifest generation across
+    # platforms. Without this, manifest ordering can flip on different
+    # filesystems and trigger unnecessary AppCache invalidations.
+    walk_results = []
+    for root, dirs, files in os.walk(directory_path):
+        # Prune excluded directories in-place so os.walk doesn't descend
+        # into __pycache__ / .git / node_modules and so manifest entries
+        # don't include compiled/build artefacts.
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+        dirs.sort()
+        files.sort()
+        walk_results.append((root, files))
+
+    for root, files in walk_results:
         for file in files:
             lower_file = file.lower()
             if lower_file.endswith('.appcache') or lower_file.endswith('.manifest') or lower_file.endswith('.exe') or lower_file.endswith('.py'):
+                continue
+            if file in EXCLUDED_FILES:
                 continue
             file_path = os.path.join(root, file)
 
             if not include_payloads and 'payload' in root:
                 continue
-            
+
             # Compute relative path for manifest entry
             rel_path = os.path.relpath(file_path, directory_path)
             rel_path = rel_path.replace("\\", "/")
-            
+
+            # If this is a payload ELF/bin, rewrite the path using the
+            # canonical casing from payload_map.js so the manifest matches
+            # the URL the runtime fetches.
+            canonical_path = rel_path
             if 'payloads/' in rel_path and include_payloads:
                 parts = rel_path.split("/")
                 # payloads/{id}/{version}/{filename}
                 if len(parts) >= 4 and parts[0] == "payloads":
-                    
+
                     # Always include metadata.json files (small, needed for payload list)
                     if file == "metadata.json":
                         file_hash = calculate_file_hash(file_path)
                         manifest.append(rel_path + " #" + file_hash)
                         continue
-                    
-                    # For ELF/bin files: only include default versions
-                    if lower_file.endswith('.elf') or lower_file.endswith('.bin'):
-                        if rel_path not in default_paths:
-                            continue
-            
-            file_hash = calculate_file_hash(file_path)
-            
-            if args.cloudflare_workaround and file == 'index.html':
-                file_path = file_path.replace("index.html","")
-                if file_path.isspace() or file_path == '':
-                    file_path = '/'
 
-            manifest_path = os.path.relpath(file_path, directory_path)
-            if manifest_path.isspace() or manifest_path == '' or manifest_path == '.':
-                manifest_path = '/'
-                
-            manifest_path = manifest_path.replace("\\","/")
+                    # For ELF/bin files: only include default versions.
+                    if lower_file.endswith('.elf') or lower_file.endswith('.bin'):
+                        canonical = default_paths_by_lower.get(rel_path.lower())
+                        if canonical is None:
+                            continue
+                        canonical_path = canonical
+
+            file_hash = calculate_file_hash(file_path)
+
+            # Default to the canonical (payload_map-derived) path; only
+            # rewrite for index.html under the Cloudflare workaround.
+            manifest_path = canonical_path
+
+            if args.cloudflare_workaround and file == 'index.html':
+                cf_path = file_path.replace("index.html", "")
+                if cf_path.isspace() or cf_path == '':
+                    cf_path = '/'
+                manifest_path = os.path.relpath(cf_path, directory_path)
+                if manifest_path.isspace() or manifest_path == '' or manifest_path == '.':
+                    manifest_path = '/'
+                manifest_path = manifest_path.replace("\\", "/")
+
             manifest.append(manifest_path + " #" + file_hash)
 
     manifest.append("")

@@ -92,7 +92,16 @@ async function showSettingsVersionPage(payload) {
         if (!isPayloadFwCompatible && !window.devOptions.bypassFirmware) {
             var warningDiv = document.createElement("div");
             warningDiv.className = "fw-incompatible-warning";
-            warningDiv.innerHTML = '<p>All versions are incompatible with your firmware (' + currentFw + '). This payload is hidden from the launch menu.</p><p class="fw-incompatible-sub">Enable "Bypass Firmware Compatibility" in Developer Options to override.</p>';
+            // Build via DOM API so a spoofed UA-derived currentFw cannot
+            // inject HTML into this warning.
+            while (warningDiv.firstChild) warningDiv.removeChild(warningDiv.firstChild);
+            var warnP1 = document.createElement('p');
+            warnP1.textContent = 'All versions are incompatible with your firmware (' + (currentFw || '') + '). This payload is hidden from the launch menu.';
+            var warnP2 = document.createElement('p');
+            warnP2.className = 'fw-incompatible-sub';
+            warnP2.textContent = 'Enable "Bypass Firmware Compatibility" in Developer Options to override.';
+            warningDiv.appendChild(warnP1);
+            warningDiv.appendChild(warnP2);
             grid.appendChild(warningDiv);
         }
 
@@ -142,13 +151,33 @@ async function showSettingsVersionPage(payload) {
                 cardBadges.appendChild(preReleaseBadge);
             }
 
-            // Cached (offline) badge for default versions
+            // Offline availability badge:
+            //   - Default versions are guaranteed in AppCache → "Cached"
+            //   - Non-default versions can be pre-fetched into the HTTP
+            //     cache (LRU-evictable) → "Cached*" once we've recorded a
+            //     successful pre-fetch, otherwise "Online Required"
             if (ver.isDefault === true) {
                 var cachedBadge = document.createElement('span');
                 cachedBadge.className = 'version-card-cached-badge';
                 cachedBadge.textContent = 'Cached';
-                cachedBadge.title = 'Available offline';
+                cachedBadge.title = 'Available offline (in AppCache)';
                 cardBadges.appendChild(cachedBadge);
+            } else {
+                var prefetched = (typeof getPrefetchedVersions === 'function') ? getPrefetchedVersions() : {};
+                var prefetchKey = payload.id + "@" + ver.version;
+                if (prefetched[prefetchKey]) {
+                    var prefetchBadge = document.createElement('span');
+                    prefetchBadge.className = 'version-card-prefetched-badge';
+                    prefetchBadge.textContent = 'Cached*';
+                    prefetchBadge.title = 'In browser cache (may be evicted; re-cached on next Settings exit while online)';
+                    cardBadges.appendChild(prefetchBadge);
+                } else {
+                    var onlineBadge = document.createElement('span');
+                    onlineBadge.className = 'version-card-online-badge';
+                    onlineBadge.textContent = 'Online Required';
+                    onlineBadge.title = 'Not in cache yet — will be pre-fetched when you exit Settings (if online)';
+                    cardBadges.appendChild(onlineBadge);
+                }
             }
 
             // Check if this version is currently selected
