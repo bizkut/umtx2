@@ -216,14 +216,11 @@
             );
             throw reason;
         });
-        // Update firmware display (safe for non-PS5 browsers).
-        // Use textContent to neutralise any HTML metacharacters in a
-        // spoofed UA, even though the main.js whitelist throw normally
-        // short-circuits this branch first.
+        // Update firmware display (safe for non-PS5 browsers)
         if (window.fw_str) {
-            document.getElementById("current-fw").textContent = fw_str;
+            document.getElementById("current-fw").innerHTML = fw_str;
         } else {
-            document.getElementById("current-fw").textContent = "N/A (not PS5)";
+            document.getElementById("current-fw").innerHTML = "N/A (not PS5)";
         }
         registerAppCacheEventHandlers();
         registerL2ButtonHandler();

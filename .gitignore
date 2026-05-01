@@ -1,12 +1,6 @@
 # Private
 private/
 
-# SAST reports (security audit artifacts; not for public repo)
-sast/
-
-# Local fix-plan drafts
-plans/cache-fix-plan-v2.md
-
 # macOS
 .DS_Store
 .AppleDouble

@@ -487,12 +487,7 @@ async function main(userlandRW, wkOnly = false) {
     // }
 
     async function probe_sb_elfldr() {
-        // Probe by attempting a TCP connect to localhost:9021. This is more
-        // reliable than the previous bind() probe: bind() failed with
-        // EADDRINUSE for *any* listener on 9021 (false positive when
-        // another process happens to use the port), whereas a successful
-        // connect specifically confirms there's a listener accepting
-        // connections (i.e. elfldr is actually running and serviceable).
+        // if the bind fails, elfldr is running so return true
         let fd = (await chain.syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, 0)).low << 0;
         if (fd <= 0) {
             return false;
@@ -500,9 +495,13 @@ async function main(userlandRW, wkOnly = false) {
 
         let addr = p.malloc(0x10);
         build_addr(p, addr, AF_INET, htons(9021), 0x0100007F);
-        let connect_res = (await chain.syscall(SYS_CONNECT, fd, addr, 0x10)).low << 0;
+        let bind_res = (await chain.syscall(SYS_BIND, fd, addr, 0x10)).low << 0;
         await chain.syscall(SYS_CLOSE, fd);
-        return connect_res >= 0;
+        if (bind_res < 0) {
+            return true;
+        }
+
+        return false;
     }
 
     let is_elfldr_running = await probe_sb_elfldr();
@@ -872,21 +871,8 @@ async function main(userlandRW, wkOnly = false) {
             }
         }
 
-        // Resolve elfldr filePath dynamically from payload_map so the path
-        // always matches whatever is actually in cache.appcache.
-        let elfldrPath = "payloads/elfldr/0.22.2/elfldr-ps5.elf";
-        if (window.payload_map && window.resolveActiveVersion) {
-            for (let i = 0; i < window.payload_map.length; i++) {
-                if (window.payload_map[i].id === "elfldr") {
-                    let v = window.resolveActiveVersion(window.payload_map[i]);
-                    if (v && v.filePath) elfldrPath = v.filePath;
-                    break;
-                }
-            }
-        }
-
-        if (await load_local_elf(elfldrPath) == 0) {
-            await log(`elfldr listening on ${ip.ip}:9021 (${elfldrPath})`, LogLevel.INFO);
+        if (await load_local_elf("payloads/elfldr/latest/elfldr-ps5.elf") == 0) {
+            await log(`elfldr listening on ${ip.ip}:9021`, LogLevel.INFO);
             is_elfldr_running = true;
         } else {
             await log("elfldr exited with non-zero code, port 9021 will likely not work", LogLevel.ERROR);
@@ -1189,19 +1175,8 @@ async function main(userlandRW, wkOnly = false) {
         ports += "9021";
     }
 
-    // Build the top bar via DOM API instead of innerHTML — `ip.name` and
-    // `ip.ip` come from a kernel syscall and are unlikely to contain HTML
-    // metacharacters, but textContent costs nothing and removes the sink.
-    var topBar = document.getElementById('top-bar-text');
-    if (topBar) {
-        while (topBar.firstChild) topBar.removeChild(topBar.firstChild);
-        topBar.appendChild(document.createTextNode("Listening on: "));
-        var ipSpan = document.createElement('span');
-        ipSpan.className = 'fw-bold';
-        ipSpan.textContent = ip.ip;
-        topBar.appendChild(ipSpan);
-        topBar.appendChild(document.createTextNode(" (port: " + ports + ") (" + ip.name + ")"));
-    }
+    // @ts-ignore
+    document.getElementById('top-bar-text').innerHTML = `Listening on: <span class="fw-bold">${ip.ip}</span> (port: ${ports}) (${ip.name})`;
 
     /** @type {Array<{payload_info: PayloadInfo, toast: HTMLElement}>} */
     let queue = [];

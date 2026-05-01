@@ -125,45 +125,6 @@ function resolveActiveVersion(payload) {
     };
 }
 
-/**
- * Get the map of pre-fetched payload versions ("payloadId@version" → timestamp).
- * Used to avoid redundant fetches and to drive the "Cached*" badge in the
- * version-selection UI.
- * @returns {Object<string, number>}
- */
-function getPrefetchedVersions() {
-    try {
-        const raw = localStorage.getItem(window.LOCALSTORE_PREFETCHED_VERSIONS_KEY);
-        return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-        return {};
-    }
-}
-
-/**
- * Mark a (payloadId, version) pair as having been pre-fetched.
- * @param {string} payloadId
- * @param {string} version
- */
-function markVersionPrefetched(payloadId, version) {
-    try {
-        const map = getPrefetchedVersions();
-        map[payloadId + "@" + version] = Date.now();
-        localStorage.setItem(window.LOCALSTORE_PREFETCHED_VERSIONS_KEY, JSON.stringify(map));
-    } catch (e) {
-        // localStorage quota exceeded or other I/O error — ignore
-    }
-}
-
-/**
- * Forget all pre-fetched markers. Used by Dev Options "Clear All Cache".
- */
-function clearPrefetchedVersions() {
-    try {
-        localStorage.removeItem(window.LOCALSTORE_PREFETCHED_VERSIONS_KEY);
-    } catch (e) { /* ignore */ }
-}
-
 // Export to global scope
 window.loadSettings = loadSettings;
 window.saveSettings = saveSettings;
@@ -172,9 +133,6 @@ window.setPayloadVisible = setPayloadVisible;
 window.getSelectedVersion = getSelectedVersion;
 window.setSelectedVersion = setSelectedVersion;
 window.resolveActiveVersion = resolveActiveVersion;
-window.getPrefetchedVersions = getPrefetchedVersions;
-window.markVersionPrefetched = markVersionPrefetched;
-window.clearPrefetchedVersions = clearPrefetchedVersions;
 
 // Load settings on script init
 loadSettings();

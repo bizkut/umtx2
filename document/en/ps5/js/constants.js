@@ -13,10 +13,6 @@ window.MAINLOOP_EXECUTE_PAYLOAD_REQUEST = "mainloop_execute_payload_request";
 window.SETTINGS_PAYLOAD_VISIBILITY = "payload_visibility";
 window.SETTINGS_PAYLOAD_VERSIONS = "payload_versions";
 window.SETTINGS_DEV_MODE = "dev_mode";
-window.LOCALSTORE_PREFETCHED_VERSIONS_KEY = "prefetched_versions";
-window.LOCALSTORE_APPCACHE_DEBUG_KEY = "appcache_debug_log";
-window.SESSIONSTORE_EXPLOIT_RETRY_KEY = "exploit_retry_count";
-window.MAX_EXPLOIT_RETRIES = 5;
 
 // ── Toast timeouts ─────────────────────────────────────────
 window.TOAST_SUCCESS_TIMEOUT = 2000;

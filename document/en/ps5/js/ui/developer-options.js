@@ -156,65 +156,6 @@ function populateDevOptions() {
         }
     ));
 
-    // Cache Stats button — surfaces AppCache state, pre-fetched versions,
-    // and localStorage usage so users can include this in bug reports.
-    var statsBtn = document.createElement('button');
-    statsBtn.className = 'dev-option-button';
-    statsBtn.textContent = 'Show Cache Stats';
-    statsBtn.onclick = function () {
-        var lines = ['Cache Stats:'];
-        if (window.applicationCache) {
-            var statusMap = ['UNCACHED', 'IDLE', 'CHECKING', 'DOWNLOADING', 'UPDATEREADY', 'OBSOLETE'];
-            lines.push('AppCache: ' + (statusMap[window.applicationCache.status] || 'UNKNOWN'));
-        } else {
-            lines.push('AppCache: not available');
-        }
-        var prefetched = (typeof getPrefetchedVersions === 'function') ? getPrefetchedVersions() : {};
-        lines.push('Pre-fetched versions: ' + Object.keys(prefetched).length);
-        lines.push('Online: ' + (navigator.onLine ? 'yes' : 'no'));
-
-        var lsBytes = 0;
-        try {
-            for (var k in localStorage) {
-                if (localStorage.hasOwnProperty(k)) {
-                    lsBytes += (localStorage[k] || '').length + k.length;
-                }
-            }
-        } catch (e) { /* ignore */ }
-        lines.push('localStorage: ' + (lsBytes / 1024).toFixed(1) + ' KB');
-
-        alert(lines.join('\n'));
-    };
-    body.appendChild(statsBtn);
-
-    // View AppCache Log button — dumps the rolling event log captured by
-    // logAppCacheEvent so we can diagnose silent fails ("cache won't
-    // refresh") without needing devtools on the PS5.
-    var logBtn = document.createElement('button');
-    logBtn.className = 'dev-option-button';
-    logBtn.textContent = 'View AppCache Log';
-    logBtn.onclick = function () {
-        var key = window.LOCALSTORE_APPCACHE_DEBUG_KEY || 'appcache_debug_log';
-        var raw;
-        try { raw = localStorage.getItem(key); } catch (e) { raw = null; }
-        if (!raw) {
-            alert('AppCache log is empty.');
-            return;
-        }
-        try {
-            var entries = JSON.parse(raw);
-            var lines = entries.map(function (entry) {
-                var ts = new Date(entry.t).toISOString().replace('T', ' ').slice(0, 19);
-                var detail = entry.detail ? ' ' + JSON.stringify(entry.detail) : '';
-                return ts + ' [' + (entry.online ? 'on' : 'off') + '] ' + entry.name + detail;
-            });
-            alert(lines.join('\n'));
-        } catch (e) {
-            alert('Failed to parse log: ' + e);
-        }
-    };
-    body.appendChild(logBtn);
-
     // Clear All Cache button
     var clearCacheBtn = document.createElement('button');
     clearCacheBtn.className = 'dev-option-button';

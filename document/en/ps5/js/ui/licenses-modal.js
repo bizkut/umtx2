@@ -81,7 +81,6 @@ function populateLicensesContent() {
                 projectLink.className = 'license-card-link';
                 projectLink.href = payload.projectUrl;
                 projectLink.target = '_blank';
-                projectLink.rel = 'noopener noreferrer';
                 projectLink.textContent = 'View Project';
                 cardHeader.appendChild(projectLink);
             }
@@ -123,7 +122,6 @@ function populateLicensesContent() {
                 var licenseLink = document.createElement('a');
                 licenseLink.href = payload.license.url;
                 licenseLink.target = '_blank';
-                licenseLink.rel = 'noopener noreferrer';
                 licenseLink.className = 'license-card-link small';
                 licenseLink.textContent = 'View License';
                 licenseSection.appendChild(licenseLink);
@@ -199,7 +197,6 @@ function populateLicensesContent() {
                 toolProjectLink.className = 'license-card-link';
                 toolProjectLink.href = tool.url;
                 toolProjectLink.target = '_blank';
-                toolProjectLink.rel = 'noopener noreferrer';
                 toolProjectLink.textContent = 'View Project';
                 toolCardHeader.appendChild(toolProjectLink);
             }
@@ -220,7 +217,6 @@ function populateLicensesContent() {
                     var authorLink = document.createElement('a');
                     authorLink.href = tool.authorUrl;
                     authorLink.target = '_blank';
-                    authorLink.rel = 'noopener noreferrer';
                     authorLink.className = 'license-card-value';
                     authorLink.textContent = tool.author;
                     authorSection.appendChild(authorLink);
