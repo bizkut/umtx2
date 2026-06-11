@@ -1,0 +1,74 @@
+{
+  "license": {
+    "type": "Unknown",
+    "url": "https://github.com/ps5-linux/ps5-linux-loader/blob/main/LICENSE"
+  },
+  "id": "ps5-linux-loader",
+  "displayTitle": "PS5 Linux Loader",
+  "description": "Linux boot payload for PS5",
+  "authors": [
+    "ps5-linux"
+  ],
+  "projectUrl": "https://github.com/ps5-linux/ps5-linux-loader",
+  "sourceRepo": "ps5-linux/ps5-linux-loader",
+  "toPort": 9021,
+  "versions": [
+    {
+      "version": "2.1",
+      "fileName": "ps5-linux-loader.elf",
+      "filePath": "payloads/ps5-linux-loader/2.1/ps5-linux-loader.elf",
+      "downloadUrl": "https://github.com/ps5-linux/ps5-linux-loader/releases/download/v2.1/ps5-linux-loader.elf",
+      "hash": "c1014a153e4f60449fd88d6799abfb46d6fb6c3048d77c9641bc8d38d96ead0a",
+      "fileSize": 176832,
+      "releaseDate": "2026-05-17",
+      "isDefault": true,
+      "isPreRelease": false,
+      "changelog": [
+        "Added 5.00, 5.02 and 5.10 support"
+      ]
+    },
+    {
+      "version": "2.0",
+      "fileName": "ps5-linux-loader.elf",
+      "filePath": "payloads/ps5-linux-loader/2.0/ps5-linux-loader.elf",
+      "downloadUrl": "https://github.com/ps5-linux/ps5-linux-loader/releases/download/v2.0/ps5-linux-loader.elf",
+      "hash": "aef472955645ca8beee8c9e8e24539cf16c3d3e4edde7f90b50a7b0fb78c2527",
+      "fileSize": 175872,
+      "releaseDate": "2026-05-17",
+      "isDefault": false,
+      "isPreRelease": false,
+      "changelog": [
+        "Added 5.50, 6.00 and 6.02 support"
+      ]
+    },
+    {
+      "version": "1.0",
+      "fileName": "ps5-linux-loader.elf",
+      "filePath": "payloads/ps5-linux-loader/1.0/ps5-linux-loader.elf",
+      "downloadUrl": "https://github.com/ps5-linux/ps5-linux-loader/releases/download/v1.0/ps5-linux-loader.elf",
+      "hash": "1020508d87e418f839202ae92e4dd8dda361ba615e4e5bde55e41f63fa68f1c6",
+      "fileSize": 139136,
+      "releaseDate": "2026-04-28",
+      "isDefault": false,
+      "isPreRelease": false,
+      "changelog": []
+    }
+  ],
+  "supportedFirmwares": [
+    "3.00",
+    "3.10",
+    "3.20",
+    "3.21",
+    "4.00",
+    "4.02",
+    "4.03",
+    "4.50",
+    "4.51",
+    "5.00",
+    "5.02",
+    "5.10",
+    "5.50",
+    "6.00",
+    "6.02"
+  ]
+}

@@ -43,19 +43,19 @@ etaHEN, elfldr, ftpsrv, websrv, gdbsrv, klogsrv, shsrv, ps5debug, ps5debug-dizz,
 
 ### Option B: PKG Install
 
-1. Download `PPSX43000-KemalSanli UMTX 2.pkg` from [GitHub Releases](https://github.com/kemalsanli/umtx2/releases)
+1. Download `PPSX43000-KemalSanli UMTX 2.pkg` from [GitHub Releases](https://github.com/bizkut/umtx2/releases)
 2. Install the PKG on your jailbroken PS5 (via etaHEN, WebDAV, FTP, etc.)
 3. Launch the app from your home screen — it opens the UMTX 2 host directly
 
 ## Hosting
 
-Live at: [https://kemalsanli.github.io/umtx2/](https://kemalsanli.github.io/umtx2/)
+Live at: [https://bizkut.github.io/umtx2/](https://bizkut.github.io/umtx2/)
 
 ### Self-hosted
 
 If you'd rather run your own instance (LAN-only, custom domain, or fully offline / air-gapped), use the companion repo:
 
-**[kemalsanli/umtx2-self-hosted](https://github.com/kemalsanli/umtx2-self-hosted)** — Docker scaffolding that mirrors this repo. `docker compose up -d --build` and point your PS5 browser at `http://<your-server>:8080`. An internal cron pulls fresh payload metadata twice a day, so your instance stays in sync without manual updates. For offline servers, every push to this repo automatically produces a self-contained bundle (scaffolding + frozen snapshot) under the [self-hosted releases](https://github.com/kemalsanli/umtx2-self-hosted/releases) — download, extract, run.
+**[bizkut/umtx2-self-hosted](https://github.com/bizkut/umtx2-self-hosted)** — Docker scaffolding that mirrors this repo. `docker compose up -d --build` and point your PS5 browser at `http://<your-server>:8080`. An internal cron pulls fresh payload metadata twice a day, so your instance stays in sync without manual updates. For offline servers, every push to this repo automatically produces a self-contained bundle (scaffolding + frozen snapshot) under the [self-hosted releases](https://github.com/bizkut/umtx2-self-hosted/releases) — download, extract, run.
 
 ## Credits & Special Thanks
 

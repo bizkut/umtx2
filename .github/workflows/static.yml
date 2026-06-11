@@ -75,7 +75,7 @@ jobs:
 
   deploy:
     needs: update-payloads
-    if: always()
+    if: always() && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
