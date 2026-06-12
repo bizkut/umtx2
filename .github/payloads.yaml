@@ -93,6 +93,8 @@ payloads:
       url: ""
 
   # --- ftpsrv: FTP server ---
+  # NOTE: Use exact pattern 'ftpsrv-ps5.elf' to avoid matching the
+  # 'ftpsrv-ps5-install.elf' installer variant.
   - id: ftpsrv
     displayTitle: ftpsrv
     description: FTP server. Runs on port 2121.
@@ -101,7 +103,7 @@ payloads:
     projectUrl: https://github.com/ps5-payload-dev/ftpsrv
     sourceType: github-release
     sourceRepo: ps5-payload-dev/ftpsrv
-    sourcePattern: ftpsrv-ps5*.elf
+    sourcePattern: ftpsrv-ps5.elf
     toPort: 9021
     supportedFirmwares: []
     license:
