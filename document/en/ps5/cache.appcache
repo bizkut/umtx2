@@ -1,7 +1,7 @@
 CACHE MANIFEST
 
 main.js #ecc7ad5e50167c95a5e7d988bd8be0677776d9faefb0083420180d9030f43acb
-payload_map.js #ee4a5b230306c744d705f3168705de9cc09fbd09ff27c5422c585b6bd2a4fa30
+payload_map.js #7a92aa60551c6ab525804bb73a850f853f2b1238343922865f0d04d9813cb4c9
 test_refresh.html #d1309f797eaa71d04b13d8a887732a8a07e7881d3a6440950f8277e77d6a8e4a
 umtx2.js #891244d37d3f3e25923d028d5a1b0bef7f1f80d282df598c9fe749c4b5e06d5c
 rop_slave.js #a0bd7b7433762b7ce56a62c7109fa3bbb9077e2b90954f9ab25d9bf04b5dbc47
@@ -34,8 +34,8 @@ payloads/kstuff-lite-1200-only/metadata.json #149225b1f8c45a77d3bc130e11853e8daf
 payloads/kstuff-lite-1200-only/1.1-dr/kstuff-12.00-only.elf #4aacb238f165d1e241d8744f10e798ba7d7cb007d5c569804a0a1dace03f526d
 payloads/ps5-dpi-v2/metadata.json #d9edb229189249dbe6e0943f6ad1e73eb9ddf3337207907bded79e39b0085885
 payloads/ps5-dpi-v2/1.0.0/dpiv2.elf #aba9e80523899ea59f7fec47ff960096cfba6cc9521115bfe62275d3fae95c22
-payloads/payload-manager/metadata.json #858ea715b26895e17754367d94e8bc706b493f8c0c7643b07cf7c3f97dc8c28f
-payloads/payload-manager/0.6.2/pldmgr_v0.6.2.elf #0cd5e0cc89ca4db6586dc1ff6f335caa4e33b50951c0ef86f5d1ea971f34e9c5
+payloads/payload-manager/metadata.json #6a6af1376e86c6c180303c49935ce6ccb45207491cc6d386c7c35e8460fadef9
+payloads/payload-manager/0.6.3/pldmgr_v0.6.3.elf #2a42054fd9725e1d9595ff4add95abc30e5b49446fcdcb96c06775a376a841c4
 payloads/umtx2-host/metadata.json #f470ef9b49b113ae0877752f193af3300a7e070ce6c3e108c00d6af22ce3f597
 payloads/umtx2-host/1.0.0/umtx2-host.elf #71913190bbe4473d19dfe1634c03d9fb1a5c5f60cef9c4a142681e80e0d36584
 payloads/ps5-hen/metadata.json #00bc195faa7dc9b39ab420a38fbf83271972301099d0ed081b23172c3466da7c
