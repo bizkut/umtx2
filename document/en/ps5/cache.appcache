@@ -1,6 +1,6 @@
 CACHE MANIFEST
 
-payload_map.js #cfdb538add2400e02d3a541eb9e42f9fba77ccb6e46756535146c6bedc89f7ea
+payload_map.js #91c2e73c65d062e33c52d611e3f03ef1dff30d02d923df1c4f96761757b07f14
 syscalls.js #8bec7bf835654f394f65353d4b9e2006f319522fd38b7b6216c312063f0ac986
 index.html #9241a5ae5752a1c87672dd10eda252e42348f7e5b23e83d6ce07b4a1b882a362
 main.js #ecc7ad5e50167c95a5e7d988bd8be0677776d9faefb0083420180d9030f43acb
@@ -89,7 +89,7 @@ payloads/payload-manager/metadata.json #5f99a41f51b590a13e37bbd91b54318df3527346
 payloads/payload-manager/0.6.3/pldmgr_v0.6.3.elf #2a42054fd9725e1d9595ff4add95abc30e5b49446fcdcb96c06775a376a841c4
 payloads/kstuff-lite/metadata.json #bd01ccce96c8bf8f264f0158430ea1c01b6662344ff3d592fefc54f6113fff17
 payloads/kstuff-lite/1.2-dr-test2/kstuff.elf #2b699d411079a21dba7c39a02993fc0fb21e52f434103e884a0c892fafe56b75
-payloads/ftpsrv/metadata.json #f6955b232ae3e3b5c9bc65386a7f64517b28f1528ac84ec786c58c0379b828d7
+payloads/ftpsrv/metadata.json #7129ea4ba88277dbb95bfc2eff93a7acb2230715bf04898a595ba848559d8ea1
 payloads/ftpsrv/0.22/ftpsrv-ps5.elf #41148c2c1cad1ea9e7cfde03e389fa918e3338e896d06167346de09adbdc8757
 payloads/kstuff-toggle-ps4/metadata.json #10c02df2667aa1d7c1a59f0bfbf861e9fb4b93655fb76fa4e89e471e3cad808e
 payloads/kstuff-toggle-ps4/0.6/kstuff-toggle-ps4.elf #ae8c39e79f731b5b0515b8487ff7986cf9a626e760881dacc107bd888f3694c6
